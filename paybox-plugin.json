@@ -1,0 +1,6 @@
+{
+  "tool": "analyze_token",
+  "arguments": {
+    "symbol": "BTC"
+  }
+}
