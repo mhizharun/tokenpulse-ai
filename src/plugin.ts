@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import * as z from "zod/v4";
+import YahooFinance from "yahoo-finance2";
 
 const PROTOCOL_VERSION = "2026-07-28";
 
@@ -251,6 +252,136 @@ function analyzeMarket(market: MarketData) {
   };
 }
 
+
+const yahooFinance = new YahooFinance({
+  suppressNotices: ["yahooSurvey"],
+});
+
+const STOCK_SYMBOLS = [
+  "AAPL", "TSLA", "NVDA", "MSFT", "AMZN",
+] as const;
+
+type StockSymbol = typeof STOCK_SYMBOLS[number];
+
+type StockData = {
+  symbol: string;
+  name: string;
+  priceUsd: number;
+  changePercent: number | null;
+  dayHigh: number | null;
+  dayLow: number | null;
+  volume: number | null;
+  marketCap: number | null;
+  currency: string;
+  marketState: string;
+};
+
+async function fetchStock(symbol: StockSymbol): Promise<StockData> {
+  const quote = await yahooFinance.quote(symbol);
+
+  if (
+    typeof quote.regularMarketPrice !== "number" ||
+    !Number.isFinite(quote.regularMarketPrice) ||
+    quote.regularMarketPrice <= 0
+  ) {
+    throw new Error(`A valid quote is unavailable for ${symbol}.`);
+  }
+
+  return {
+    symbol,
+    name: quote.shortName || quote.longName || symbol,
+    priceUsd: quote.regularMarketPrice,
+    changePercent:
+      typeof quote.regularMarketChangePercent === "number"
+        ? quote.regularMarketChangePercent
+        : null,
+    dayHigh:
+      typeof quote.regularMarketDayHigh === "number"
+        ? quote.regularMarketDayHigh
+        : null,
+    dayLow:
+      typeof quote.regularMarketDayLow === "number"
+        ? quote.regularMarketDayLow
+        : null,
+    volume:
+      typeof quote.regularMarketVolume === "number"
+        ? quote.regularMarketVolume
+        : null,
+    marketCap:
+      typeof quote.marketCap === "number"
+        ? quote.marketCap
+        : null,
+    currency: quote.currency || "USD",
+    marketState: quote.marketState || "UNKNOWN",
+  };
+}
+
+function analyzeStock(stock: StockData) {
+  const bullishFactors: string[] = [];
+  const bearishFactors: string[] = [];
+  const riskFlags: string[] = [];
+
+  if (stock.changePercent === null) {
+    riskFlags.push("Daily percentage change is unavailable.");
+  } else if (stock.changePercent > 0) {
+    bullishFactors.push("The stock is up for the reported trading session.");
+  } else if (stock.changePercent < 0) {
+    bearishFactors.push("The stock is down for the reported trading session.");
+  } else {
+    riskFlags.push("The reported daily percentage change is zero.");
+  }
+
+  if (
+    stock.dayHigh !== null &&
+    stock.dayLow !== null &&
+    stock.dayHigh > stock.dayLow
+  ) {
+    const rangePosition =
+      ((stock.priceUsd - stock.dayLow) /
+        (stock.dayHigh - stock.dayLow)) * 100;
+
+    if (rangePosition >= 80) {
+      bullishFactors.push("Price is in the upper part of its reported daily range.");
+      riskFlags.push("Price is near the daily high; a pullback is possible.");
+    } else if (rangePosition <= 20) {
+      bearishFactors.push("Price is in the lower part of its reported daily range.");
+      riskFlags.push("Price is near the daily low; weakness may continue.");
+    }
+  }
+
+  if (stock.marketState !== "REGULAR") {
+    riskFlags.push(
+      `Market state is ${stock.marketState}; confirm quote timing and trading hours.`,
+    );
+  }
+
+  if (bullishFactors.length === 0) {
+    bullishFactors.push("No strong bullish factor was identified by these rules.");
+  }
+
+  if (bearishFactors.length === 0) {
+    bearishFactors.push("No strong bearish factor was identified by these rules.");
+  }
+
+  return {
+    ...stock,
+    bullishFactors,
+    bearishFactors,
+    riskFlags,
+    analysis:
+      `${stock.name} (${stock.symbol}) is trading at ` +
+      `${stock.currency} ${stock.priceUsd.toFixed(2)}. ` +
+      `Reported session change: ${
+        stock.changePercent === null
+          ? "unavailable"
+          : `${stock.changePercent.toFixed(2)}%`
+      }. These are limited rule-based observations, not a prediction.`,
+    source: "Yahoo Finance",
+    disclaimer:
+      "Quotes may be delayed, incomplete, or rate-limited. This is not financial advice.",
+  };
+}
+
 function createServer() {
   const server = new McpServer(
     { name: "tokenpulse-ai", version: "2.0.0" },
@@ -461,6 +592,298 @@ function createServer() {
             "\n\n" + result.warning,
         }],
         structuredContent: result,
+      };
+    },
+  );
+
+
+  server.registerTool(
+    "analyze_stock",
+    {
+      title: "Analyze US Stock",
+      description:
+        "Analyze a supported US stock using Yahoo Finance quotes, session change, " +
+        "daily range, bullish and bearish observations, and risk flags.",
+      inputSchema: z.object({
+        symbol: z.enum(STOCK_SYMBOLS),
+      }).strict(),
+      outputSchema: z.object({
+        symbol: z.string(),
+        name: z.string(),
+        priceUsd: z.number(),
+        changePercent: z.number().nullable(),
+        dayHigh: z.number().nullable(),
+        dayLow: z.number().nullable(),
+        volume: z.number().nullable(),
+        marketCap: z.number().nullable(),
+        currency: z.string(),
+        marketState: z.string(),
+        bullishFactors: z.array(z.string()),
+        bearishFactors: z.array(z.string()),
+        riskFlags: z.array(z.string()),
+        analysis: z.string(),
+        source: z.string(),
+        disclaimer: z.string(),
+      }),
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async ({ symbol }) => {
+      const result = analyzeStock(await fetchStock(symbol));
+      return {
+        content: [{
+          type: "text" as const,
+          text:
+            `${result.name} (${result.symbol})\n` +
+            `Price: ${result.currency} ${result.priceUsd.toFixed(2)}\n` +
+            `Session change: ${result.changePercent === null ? "Unavailable" : `${result.changePercent.toFixed(2)}%`}\n` +
+            `Market state: ${result.marketState}\n` +
+            `Bullish observations: ${result.bullishFactors.join("; ")}\n` +
+            `Bearish observations: ${result.bearishFactors.join("; ")}\n` +
+            `Risk flags: ${result.riskFlags.join("; ")}\n\n` +
+            result.disclaimer,
+        }],
+        structuredContent: result,
+      };
+    },
+  );
+
+  server.registerTool(
+    "get_market_news",
+    {
+      title: "Market News Intelligence",
+      description:
+        "Retrieve Yahoo Finance headlines and apply a basic bullish, bearish, mixed, " +
+        "or uncertain keyword classification. This is not a price prediction.",
+      inputSchema: z.object({
+        query: z.string().min(1).max(120).optional(),
+        limit: z.number().int().min(1).max(10).optional(),
+      }).strict(),
+      outputSchema: z.object({
+        query: z.string(),
+        count: z.number(),
+        articles: z.array(z.object({
+          title: z.string(),
+          publisher: z.string(),
+          link: z.string(),
+          publishedAt: z.string().nullable(),
+          sentiment: z.enum(["BULLISH", "BEARISH", "MIXED", "UNCERTAIN"]),
+          sentimentReason: z.string(),
+        })),
+        source: z.string(),
+        disclaimer: z.string(),
+      }),
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async ({ query, limit }) => {
+      const searchQuery = query?.trim() || "stock market economy Federal Reserve";
+      const count = limit ?? 8;
+      const result = await yahooFinance.search(searchQuery, {
+        newsCount: count,
+        quotesCount: 0,
+      });
+
+      const positiveWords = [
+        "surge", "rally", "gain", "growth", "beats", "upgrade",
+        "jumps", "rises", "rate cut", "cooling inflation",
+      ];
+      const negativeWords = [
+        "crash", "plunge", "falls", "drops", "selloff", "sell-off",
+        "downgrade", "misses", "recession", "war", "rate hike",
+        "layoffs", "slumps",
+      ];
+
+      const articles = (result.news ?? []).slice(0, count).map((item) => {
+        const title = item.title || "Untitled market report";
+        const text = title.toLowerCase();
+        const positive = positiveWords.some((word) => text.includes(word));
+        const negative = negativeWords.some((word) => text.includes(word));
+
+        const sentiment =
+          positive && negative ? "MIXED" as const :
+          positive ? "BULLISH" as const :
+          negative ? "BEARISH" as const : "UNCERTAIN" as const;
+
+        const timestamp = item.providerPublishTime;
+        const publishedAt =
+          typeof timestamp === "number" && Number.isFinite(timestamp)
+            ? new Date(timestamp * 1000).toISOString()
+            : null;
+
+        return {
+          title,
+          publisher: item.publisher || "Unknown publisher",
+          link: item.link || "",
+          publishedAt,
+          sentiment,
+          sentimentReason:
+            sentiment === "UNCERTAIN"
+              ? "Headline keywords alone do not establish market direction."
+              : "Classification is based on headline keywords only.",
+        };
+      });
+
+      const output = {
+        query: searchQuery,
+        count: articles.length,
+        articles,
+        source: "Yahoo Finance",
+        disclaimer:
+          "This is headline-only keyword classification, not full article analysis " +
+          "or a reliable prediction of price movement.",
+      };
+
+      return {
+        content: [{
+          type: "text" as const,
+          text:
+            `Market news: ${searchQuery}\n\n` +
+            (articles.length
+              ? articles.map((a, i) =>
+                  `${i + 1}. ${a.title}\nPublisher: ${a.publisher}\n` +
+                  `Published: ${a.publishedAt ?? "Unknown"}\n` +
+                  `Sentiment: ${a.sentiment}\n${a.link}`
+                ).join("\n\n")
+              : "No news articles were returned.") +
+            `\n\n${output.disclaimer}`,
+        }],
+        structuredContent: output,
+      };
+    },
+  );
+
+  server.registerTool(
+    "get_economic_calendar",
+    {
+      title: "High-Impact Economic Calendar",
+      description:
+        "Retrieve scheduled and released economic events including CPI, PPI, PCE, " +
+        "GDP, employment data, retail sales, jobless claims, and FOMC decisions.",
+      inputSchema: z.object({
+        importance: z.enum(["high", "medium", "all"]).optional(),
+      }).strict(),
+      outputSchema: z.object({
+        count: z.number(),
+        events: z.array(z.object({
+          eventName: z.string(),
+          importance: z.string(),
+          scheduledAt: z.string(),
+          status: z.enum(["UPCOMING", "RELEASED", "AWAITING_UPDATE"]),
+          periodLabel: z.string().nullable(),
+          previous: z.string().nullable(),
+          forecast: z.string().nullable(),
+          actual: z.string().nullable(),
+          unit: z.string().nullable(),
+          canonicalUrl: z.string().nullable(),
+        })),
+        source: z.string(),
+        attribution: z.string(),
+        disclaimer: z.string(),
+      }),
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async ({ importance }) => {
+      const level = importance ?? "high";
+      const url = new URL("https://xoomar.com/api/markets/calendar");
+      if (level !== "all") url.searchParams.set("importance", level);
+
+      const response = await fetch(url, {
+        headers: { accept: "application/json" },
+        signal: AbortSignal.timeout(12000),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Economic calendar returned HTTP ${response.status}.`);
+      }
+
+      const payload: unknown = await response.json();
+      if (
+        payload === null ||
+        typeof payload !== "object" ||
+        !("data" in payload) ||
+        !Array.isArray(payload.data)
+      ) {
+        throw new Error("Economic calendar returned an unexpected response.");
+      }
+
+      const now = Date.now();
+      const events = payload.data
+        .filter((item: unknown) =>
+          item !== null && typeof item === "object" && !Array.isArray(item)
+        )
+        .map((item: Record<string, unknown>) => {
+          const scheduledAt =
+            typeof item.scheduledAt === "string" ? item.scheduledAt : "";
+          const actual =
+            item.actual === null || item.actual === undefined || item.actual === ""
+              ? null : String(item.actual);
+          const scheduledTime = Date.parse(scheduledAt);
+          const status =
+            actual !== null ? "RELEASED" as const :
+            Number.isFinite(scheduledTime) && scheduledTime > now
+              ? "UPCOMING" as const : "AWAITING_UPDATE" as const;
+
+          const nullable = (value: unknown): string | null =>
+            value === null || value === undefined || value === ""
+              ? null : String(value);
+
+          return {
+            eventName: typeof item.eventName === "string" ? item.eventName : "Unknown event",
+            importance: typeof item.importance === "string" ? item.importance : "unknown",
+            scheduledAt,
+            status,
+            periodLabel: nullable(item.periodLabel),
+            previous: nullable(item.previous),
+            forecast: nullable(item.forecast),
+            actual,
+            unit: nullable(item.unit),
+            canonicalUrl: nullable(item.canonicalUrl),
+          };
+        })
+        .sort((a, b) => Date.parse(a.scheduledAt) - Date.parse(b.scheduledAt));
+
+      const output = {
+        count: events.length,
+        events,
+        source: "XOOMAR economic calendar",
+        attribution: "Calendar data provided by XOOMAR: https://xoomar.com",
+        disclaimer:
+          "Calendar values may be revised. Market reactions depend on expectations " +
+          "and other conditions; an event listing alone is not a trading signal.",
+      };
+
+      return {
+        content: [{
+          type: "text" as const,
+          text:
+            `Economic calendar (${level} importance): ${events.length} events\n\n` +
+            (events.length
+              ? events.map((e, i) =>
+                  `${i + 1}. ${e.eventName}\nScheduled: ${e.scheduledAt}\n` +
+                  `Status: ${e.status}\nPeriod: ${e.periodLabel ?? "Not specified"}\n` +
+                  `Previous: ${e.previous ?? "Unavailable"} | ` +
+                  `Forecast: ${e.forecast ?? "Unavailable"} | ` +
+                  `Actual: ${e.actual ?? "Not reported"}\n` +
+                  `Details: ${e.canonicalUrl ?? "Unavailable"}`
+                ).join("\n\n")
+              : "No events were returned.") +
+            `\n\n${output.attribution}\n${output.disclaimer}`,
+        }],
+        structuredContent: output,
       };
     },
   );
