@@ -2,6 +2,13 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import * as z from "zod/v4";
 import YahooFinance from "yahoo-finance2";
+import {
+  demoBuy,
+  demoSell,
+  demoBalance,
+  demoPortfolio,
+  demoHistory,
+} from "./demo-trading.js";
 
 const PROTOCOL_VERSION = "2026-07-28";
 
@@ -427,6 +434,168 @@ function createServer() {
             result.analysis,
         }],
         structuredContent: result,
+      };
+    },
+  );
+
+  server.registerTool(
+    "predict_token",
+    {
+      title: "TokenPulse Market Predictions",
+      description:
+        "Generate a transparent, rule-based crypto market forecast using current CoinGecko data. Returns direction, heuristic confidence, entry zone, target, stop-loss, reasoning, invalidation conditions, and an action plan. Forecasts are uncertain and do not execute trades.",
+      inputSchema: z.object({
+        symbol: z.enum(SYMBOLS),
+        timeframe: z.enum(["24h", "3d", "7d"]).default("24h"),
+        riskProfile: z.enum(["conservative", "balanced", "aggressive"]).default("balanced"),
+      }).strict(),
+      outputSchema: z.object({
+        symbol: z.string(),
+        direction: z.enum(["BULLISH", "BEARISH", "NEUTRAL"]),
+        confidencePercent: z.number(),
+        confidenceMeaning: z.string(),
+        currentPriceUsd: z.number(),
+        entryLowUsd: z.number(),
+        entryHighUsd: z.number(),
+        targetUsd: z.number().nullable(),
+        stopLossUsd: z.number().nullable(),
+        timeframe: z.string(),
+        riskProfile: z.string(),
+        rationale: z.array(z.string()),
+        invalidation: z.string(),
+        recommendedAction: z.enum(["PREPARE_ENTRY", "MONITOR", "NO_TRADE"]),
+        executionStatus: z.string(),
+        source: z.string(),
+        disclaimer: z.string(),
+      }),
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async ({ symbol, timeframe, riskProfile }) => {
+      const market = (await fetchMarkets([symbol]))[0];
+      if (!market) throw new Error("Market data is unavailable.");
+
+      const analysis = analyzeMarket(market);
+      const change = market.change24hPercent;
+      const range = market.rangePositionPercent;
+      const volume = market.volumeToMarketCapPercent;
+
+      let score = 50;
+      if (change !== null) {
+        score += Math.max(-20, Math.min(20, change * 2));
+      }
+      if (range !== null) {
+        if (range >= 70) score += 5;
+        else if (range <= 30) score -= 5;
+      }
+      if (volume !== null && volume >= 5 && change !== null) {
+        score += change > 0 ? 5 : change < 0 ? -5 : 0;
+      }
+
+      score = Math.max(0, Math.min(100, score));
+      const direction =
+        score >= 58 ? "BULLISH" as const :
+        score <= 42 ? "BEARISH" as const :
+        "NEUTRAL" as const;
+
+      const confidencePercent = direction === "NEUTRAL"
+        ? Math.round(50 + Math.abs(score - 50))
+        : Math.round(Math.min(75, 50 + Math.abs(score - 50)));
+
+      const timeframeMultiplier =
+        timeframe === "24h" ? 1 :
+        timeframe === "3d" ? 1.8 : 2.5;
+
+      const volatilityPercent = Math.max(
+        2,
+        Math.min(15, market.dailyRangePercent ?? 3),
+      );
+      const profileMultiplier =
+        riskProfile === "conservative" ? 0.7 :
+        riskProfile === "aggressive" ? 1.3 : 1;
+
+      const movePercent =
+        volatilityPercent * timeframeMultiplier * profileMultiplier;
+
+      const entryHalfWidth = market.priceUsd *
+        Math.min(0.01, volatilityPercent / 100 * 0.15);
+
+      const entryLowUsd = Math.max(0, market.priceUsd - entryHalfWidth);
+      const entryHighUsd = market.priceUsd + entryHalfWidth;
+
+      const hasDirectionalSignal =
+        direction !== "NEUTRAL" && change !== null;
+
+      const targetUsd = hasDirectionalSignal
+        ? market.priceUsd * (
+            1 + (direction === "BULLISH" ? 1 : -1) *
+            movePercent / 100
+          )
+        : null;
+
+      const stopLossUsd = hasDirectionalSignal
+        ? market.priceUsd * (
+            1 - (direction === "BULLISH" ? 1 : -1) *
+            movePercent * 0.6 / 100
+          )
+        : null;
+
+      const rationale = [
+        `24-hour change: ${change === null ? "unavailable" : change.toFixed(2) + "%"}.`,
+        `Rule-based market classification: ${analysis.momentum}.`,
+        `Position in 24-hour range: ${range === null ? "unavailable" : range.toFixed(1) + "%"}.`,
+        `Volume-to-market-cap ratio: ${volume === null ? "unavailable" : volume.toFixed(2) + "%"}.`,
+        ...analysis.riskFlags,
+        "Confidence is a heuristic score, not a statistically calibrated probability of success.",
+      ];
+
+      const recommendedAction =
+        !hasDirectionalSignal || confidencePercent < 58 ||
+        analysis.riskFlags.length >= 3
+          ? "MONITOR" as const
+          : "PREPARE_ENTRY" as const;
+
+      return {
+        content: [{
+          type: "text" as const,
+          text:
+            `${symbol} ${direction} forecast (${timeframe})\n` +
+            `Current price: $${market.priceUsd}\n` +
+            `Heuristic confidence: ${confidencePercent}%\n` +
+            `Entry zone: $${entryLowUsd.toFixed(6)}–$${entryHighUsd.toFixed(6)}\n` +
+            `Target: ${targetUsd === null ? "Unavailable for neutral/insufficient signal" : "$" + targetUsd.toFixed(6)}\n` +
+            `Stop-loss reference: ${stopLossUsd === null ? "Unavailable for neutral/insufficient signal" : "$" + stopLossUsd.toFixed(6)}\n` +
+            `Action plan: ${recommendedAction}\n` +
+            `Reasoning: ${rationale.join(" ")}\n` +
+            "No trade has been placed. A supported execution integration and user authorization are required.",
+        }],
+        structuredContent: {
+          symbol,
+          direction,
+          confidencePercent,
+          confidenceMeaning:
+            "Rule-based heuristic, not a calibrated probability of profit.",
+          currentPriceUsd: market.priceUsd,
+          entryLowUsd,
+          entryHighUsd,
+          targetUsd,
+          stopLossUsd,
+          timeframe,
+          riskProfile,
+          rationale,
+          invalidation:
+            "Reassess if the 24-hour trend reverses, new market data contradicts the signal, or price moves beyond the proposed risk levels. These levels are estimates, not guarantees.",
+          recommendedAction,
+          executionStatus:
+            "ANALYSIS_ONLY: no trade executed; execution integration and authorization are required.",
+          source: "CoinGecko",
+          disclaimer:
+            "Rule-based forecast only. Cryptocurrency prices are volatile. Targets and stop-loss references are estimates, not guarantees or financial advice.",
+        },
       };
     },
   );
@@ -989,6 +1158,130 @@ function createServer() {
             `Warnings: ${warnings.join(" ")}`,
         }],
         structuredContent: result,
+      };
+    },
+  );
+
+
+  server.registerTool(
+    "demo_buy",
+    {
+      title: "Simulated Buy",
+      description: "Record a simulated buy in the local demo portfolio. Requires a symbol, USD amount and user-provided demo price. Never executes a real trade.",
+      inputSchema: z.object({
+        symbol: z.string().min(2).max(15),
+        amountUsd: z.number().positive().max(1000000),
+        demoPrice: z.number().positive().max(1000000000),
+      }).strict(),
+      outputSchema: z.object({ result: z.string() }),
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    async ({ symbol, amountUsd, demoPrice }) => {
+      const result = await demoBuy(symbol, amountUsd, demoPrice);
+      return {
+        content: [{ type: "text" as const, text: result }],
+        structuredContent: { result },
+      };
+    },
+  );
+
+  server.registerTool(
+    "demo_sell",
+    {
+      title: "Simulated Sell",
+      description: "Record a simulated sell from the local demo portfolio. Requires a symbol, quantity and user-provided demo price. Never executes a real trade.",
+      inputSchema: z.object({
+        symbol: z.string().min(2).max(15),
+        quantity: z.number().positive().max(1000000000),
+        demoPrice: z.number().positive().max(1000000000),
+      }).strict(),
+      outputSchema: z.object({ result: z.string() }),
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    async ({ symbol, quantity, demoPrice }) => {
+      const result = await demoSell(symbol, quantity, demoPrice);
+      return {
+        content: [{ type: "text" as const, text: result }],
+        structuredContent: { result },
+      };
+    },
+  );
+
+  server.registerTool(
+    "demo_balance",
+    {
+      title: "Demo Account Balance",
+      description: "Read the cash balance in the simulated trading account. No real funds are accessed.",
+      inputSchema: z.object({}).strict(),
+      outputSchema: z.object({ result: z.string() }),
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async () => {
+      const result = await demoBalance();
+      return {
+        content: [{ type: "text" as const, text: result }],
+        structuredContent: { result },
+      };
+    },
+  );
+
+  server.registerTool(
+    "demo_portfolio",
+    {
+      title: "Demo Portfolio",
+      description: "Read holdings in the simulated trading account. Holdings are quantities, not live market valuations.",
+      inputSchema: z.object({}).strict(),
+      outputSchema: z.object({ result: z.string() }),
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async () => {
+      const result = await demoPortfolio();
+      return {
+        content: [{ type: "text" as const, text: result }],
+        structuredContent: { result },
+      };
+    },
+  );
+
+  server.registerTool(
+    "demo_history",
+    {
+      title: "Demo Trade History",
+      description: "Read recent simulated trades. This does not access or execute real trades.",
+      inputSchema: z.object({}).strict(),
+      outputSchema: z.object({ result: z.string() }),
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async () => {
+      const result = await demoHistory();
+      return {
+        content: [{ type: "text" as const, text: result }],
+        structuredContent: { result },
       };
     },
   );

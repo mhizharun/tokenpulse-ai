@@ -1,6 +1,11 @@
 {
-  "tool": "analyze_token",
+  "tool": "calculate_risk",
   "arguments": {
-    "symbol": "BTC"
+    "accountUsd": 10000,
+    "riskPercent": 1,
+    "entryPrice": 100,
+    "stopPrice": 95,
+    "targetPrice": 110,
+    "side": "LONG"
   }
 }

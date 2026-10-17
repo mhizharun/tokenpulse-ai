@@ -1,2 +1,14 @@
 dist/
 node_modules/
+.env
+.env.*
+!.env.example
+
+# Local demo data
+data/
+
+# Local backups
+*.backup
+*.backup-*
+*.before_*
+*.v2.backup
