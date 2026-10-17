@@ -10,21 +10,24 @@
   "packageManager": "pnpm@11.11.0",
   "scripts": {
     "dev": "tsx src/plugin.ts",
-    "build": "esbuild src/plugin.ts --bundle --platform=node --format=esm --target=node24 --minify --outdir=dist --out-extension:.js=.mjs",
+    "build": "node scripts/build.mjs",
     "conformance": "node scripts/conformance.mjs",
     "test": "node scripts/test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",
+    "node-telegram-bot-api": "^2.1.0",
     "yahoo-finance2": "^4.0.4",
     "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/json-schema": "^7.0.15",
     "@types/node": "24.12.2",
+    "@types/node-telegram-bot-api": "^0.64.15",
     "ajv": "8.20.0",
     "esbuild": "0.28.2",
+    "esbuild-wasm": "^0.28.2",
     "tsx": "4.23.12",
     "typescript": "5.9.3"
   }

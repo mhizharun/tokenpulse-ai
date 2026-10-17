@@ -2,6 +2,13 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import * as z from "zod/v4";
 import YahooFinance from "yahoo-finance2";
+import {
+  demoBuy,
+  demoSell,
+  demoBalance,
+  demoPortfolio,
+  demoHistory,
+} from "./demo-trading.js";
 
 const PROTOCOL_VERSION = "2026-07-28";
 
@@ -1151,6 +1158,130 @@ function createServer() {
             `Warnings: ${warnings.join(" ")}`,
         }],
         structuredContent: result,
+      };
+    },
+  );
+
+
+  server.registerTool(
+    "demo_buy",
+    {
+      title: "Simulated Buy",
+      description: "Record a simulated buy in the local demo portfolio. Requires a symbol, USD amount and user-provided demo price. Never executes a real trade.",
+      inputSchema: z.object({
+        symbol: z.string().min(2).max(15),
+        amountUsd: z.number().positive().max(1000000),
+        demoPrice: z.number().positive().max(1000000000),
+      }).strict(),
+      outputSchema: z.object({ result: z.string() }),
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    async ({ symbol, amountUsd, demoPrice }) => {
+      const result = await demoBuy(symbol, amountUsd, demoPrice);
+      return {
+        content: [{ type: "text" as const, text: result }],
+        structuredContent: { result },
+      };
+    },
+  );
+
+  server.registerTool(
+    "demo_sell",
+    {
+      title: "Simulated Sell",
+      description: "Record a simulated sell from the local demo portfolio. Requires a symbol, quantity and user-provided demo price. Never executes a real trade.",
+      inputSchema: z.object({
+        symbol: z.string().min(2).max(15),
+        quantity: z.number().positive().max(1000000000),
+        demoPrice: z.number().positive().max(1000000000),
+      }).strict(),
+      outputSchema: z.object({ result: z.string() }),
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    async ({ symbol, quantity, demoPrice }) => {
+      const result = await demoSell(symbol, quantity, demoPrice);
+      return {
+        content: [{ type: "text" as const, text: result }],
+        structuredContent: { result },
+      };
+    },
+  );
+
+  server.registerTool(
+    "demo_balance",
+    {
+      title: "Demo Account Balance",
+      description: "Read the cash balance in the simulated trading account. No real funds are accessed.",
+      inputSchema: z.object({}).strict(),
+      outputSchema: z.object({ result: z.string() }),
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async () => {
+      const result = await demoBalance();
+      return {
+        content: [{ type: "text" as const, text: result }],
+        structuredContent: { result },
+      };
+    },
+  );
+
+  server.registerTool(
+    "demo_portfolio",
+    {
+      title: "Demo Portfolio",
+      description: "Read holdings in the simulated trading account. Holdings are quantities, not live market valuations.",
+      inputSchema: z.object({}).strict(),
+      outputSchema: z.object({ result: z.string() }),
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async () => {
+      const result = await demoPortfolio();
+      return {
+        content: [{ type: "text" as const, text: result }],
+        structuredContent: { result },
+      };
+    },
+  );
+
+  server.registerTool(
+    "demo_history",
+    {
+      title: "Demo Trade History",
+      description: "Read recent simulated trades. This does not access or execute real trades.",
+      inputSchema: z.object({}).strict(),
+      outputSchema: z.object({ result: z.string() }),
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async () => {
+      const result = await demoHistory();
+      return {
+        content: [{ type: "text" as const, text: result }],
+        structuredContent: { result },
       };
     },
   );
