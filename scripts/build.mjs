@@ -11,7 +11,6 @@ await build({
   format: "esm",
   target: "node24",
   minify: true,
-  packages: "external",
 });
 
 console.log("TokenPulse AI plugin built successfully.");
