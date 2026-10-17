@@ -1,7 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
-const ledgerPath = resolve('data/demo-ledger.json');
+const ledgerPath = '/tmp/tokenpulse-ai-demo-ledger.json';
 
 type Trade = {
   type: 'BUY' | 'SELL';
@@ -22,11 +22,16 @@ type Ledger = {
 export async function loadLedger(): Promise<Ledger> {
   try {
     return JSON.parse(await readFile(ledgerPath, 'utf8')) as Ledger;
-  } catch (error) {
-    throw new Error(
-      `Cannot load demo ledger at ${ledgerPath}. Check that data/demo-ledger.json exists.`,
-      { cause: error },
-    );
+  } catch {
+    const initialLedger: Ledger = {
+      startingBalance: 10000,
+      cash: 10000,
+      holdings: {},
+      history: [],
+    };
+
+    await saveLedger(initialLedger);
+    return initialLedger;
   }
 }
 
